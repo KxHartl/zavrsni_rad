@@ -8,9 +8,7 @@ from tf2_ros.transform_listener import TransformListener
 from tf2_ros.buffer import Buffer
 from geometry_msgs.msg import PoseStamped, PointStamped
 from nav_msgs.msg import Path, Odometry
-from std_msgs.msg import Header
-from geometry_msgs.msg import TransformStamped, Twist
-
+from geometry_msgs.msg import Twist
 
 from tf_transformations import euler_from_quaternion
 
@@ -22,36 +20,39 @@ class PotentialFieldPathPlaning(Node):
     def __init__(self):
         super().__init__('prikaz_polja')
 
-        self.drive = False
+        self.drive = False          # kontrola treba li robot voziti
         self.is_start = True        # kontrola je li robot na pocetku
 
         self.ROBOT_RADIUS = 0.5     # radijus opisane kruznice robota                   [m]
         self.KP = 0.5               # faktor pojacanja privlacnog polja                 [/]
-        self.KO = 0.02                 # faktor pojacanja odbojnog polja                   [/]
+        self.KO = 0.02              # faktor pojacanja odbojnog polja                   [/]
         self.RESOLUTION = 0.01      # rezolucija prosotra                               [m]
         self.LINEAR_BORDER = 0.5    # granica izvan koje je privlacna sila linearna     [m]
+        self.RC = 0.003             # rezolucija dolaska u cilj                         [m]
+        self.KR = 0.4               # faktor pojacanja kutne brzine                     [/]
+        self.KL = 30                # faktor pojacanja linerarne brzine                 [/]
 
         self.map_minimum_x = -4.533999919891357     # minimalna x-koordianta radnog prostora            [m]
         self.map_minimum_y = -2.5369999408721924    # minimalna y-koordianta radnog prostora            [m]
         self.map_maximum_x = 5.165999889373779      # maksimalna x-koordianta radnog prostora           [m]
         self.map_maximum_y = 2.1440000534057617     # maksimalna y-koordianta radnog prostora           [m]
 
-        self.start_x = 0.5         # start x lokacija  [m]
+        self.start_x = 0.5          # start x lokacija  [m]
         self.start_y = 0.2          # start y lokacija  [m]
         self.goal_x = 2.0           # cilj x lokacija   [m]
         self.goal_y = 2.0           # cilj y lokacija   [m]
 
         self.obstacle_x = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, -1.5, -1.5, -1.5, -1.5, -1.5, -1.6, -1.7, -1.8]            # x-koorindate tocki prepreka     [m]
-        self.obstacle_y = [-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9]            # y-koorindate tocki prepreka     [m]
+        self.obstacle_y = [-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, -0.2, -0.3, -0.4, -0.5, -0.6, -0.7, -0.8, -0.9]          # y-koorindate tocki prepreka     [m]
 
-        self.potential_field_map = []                                 # mapa iznosa potencijala za svaku tocku radnog prostora
+        self.potential_field_map = []     # mapa iznosa potencijala za svaku tocku radnog prostora
         self.calculated_path = []         # koorinate izracunate putanje od pocetne poicije do cilja
 
-        self.robot_x = 0.0
-        self.robot_y = 0.0
-        self.robot_theta = 0.0
+        self.robot_x = 0.0          # trenutna x -koordinata robota
+        self.robot_y = 0.0          # trenutna y -koordinata robota
+        self.robot_theta = 0.0      # trenutacna orijentacija robota
         self.point_index = 1
-        self.robot_path = []
+        self.robot_path = []        # prijedena putanja robota
 
         self.tf_broadcaster = TransformBroadcaster(self)
         self.tf_buffer = Buffer()
@@ -105,15 +106,15 @@ class PotentialFieldPathPlaning(Node):
         )
 
     def handle_goal_pose(self, msg):
-        self.calculate_speed(False)
+        self.calculate_speed(False)         # zaustavlanje robota
 
-        self.goal_x = msg.pose.position.x
-        self.goal_y = msg.pose.position.y
-        self.is_start = True
+        self.goal_x = msg.pose.position.x   # spremanje nove x -koordiante cilja
+        self.goal_y = msg.pose.position.y   # spremanje nove y -koordinate cilja
+        self.is_start = True                
         self.robot_path = []
 
-        self.potential_field_map = self.calculate_potential_field()
-        self.calculated_path = self.calculate_path()
+        self.potential_field_map = self.calculate_potential_field()     # izracun novog potencijalnog polja
+        self.calculated_path = self.calculate_path()                    # izracun nove putanje do novog cilja
 
 
         cloud_points = []
@@ -133,6 +134,7 @@ class PotentialFieldPathPlaning(Node):
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = "world"
         for point in self.calculated_path:
+
             pose = PoseStamped()
             pose.header = path_msg.header
             pose.pose.position.x = point[0]
@@ -152,8 +154,7 @@ class PotentialFieldPathPlaning(Node):
 
             n_x = int(round((self.map_maximum_x - self.map_minimum_x) / self.RESOLUTION))   # broj potentiala u x-dimenziji
             n_y = int(round((self.map_maximum_y - self.map_minimum_y) / self.RESOLUTION))   # broj potentiala u y-dimenziji
-
-            potential_field_map = [[0.0 for i in range(n_y)] for i in range(n_x)]    # x,y mapa potentiala u kojoj ce biti spremljenje vrijednosti potentiala za svaku tocku prostora
+            potential_field_map = [[0.0 for i in range(n_y)] for i in range(n_x)]           # x,y mapa potentiala
 
             for ix in range(n_x):
                 x = ix * self.RESOLUTION - abs(self.map_minimum_x)
@@ -161,10 +162,10 @@ class PotentialFieldPathPlaning(Node):
                 for iy in range(n_y):
                     y = iy * self.RESOLUTION - abs(self.map_minimum_y)
 
-                    p_attractive = self.calculate_attractive_potential(x, y)   # odredivanje iznosa privlacnog potentiala
-                    p_repulsive = self.calculate_repulsive_potential(x, y) # odredivanje odbojnog potentiala
-                    potential_of_point = p_attractive + p_repulsive     # odredivanje ukupnog potentiala u tocki porsotora 
-                    potential_field_map[ix][iy] = potential_of_point
+                    p_attractive = self.calculate_attractive_potential(x, y)    # odredivanje iznosa privlacnog potentiala
+                    p_repulsive = self.calculate_repulsive_potential(x, y)      # odredivanje odbojnog potentiala
+                    potential_of_point = p_attractive + p_repulsive             # odredivanje ukupnog potentiala u tocki porsotora 
+                    potential_field_map[ix][iy] = potential_of_point            # spremanje iznosa potencijala u mapu
             
             return potential_field_map
     
@@ -205,7 +206,7 @@ class PotentialFieldPathPlaning(Node):
     def calculate_attractive_potential(self, x, y,):
         point_to_goal = np.hypot(x - self.goal_x, y - self.goal_y)
 
-        if point_to_goal > self.LINEAR_BORDER:    # izracun privlacnog potentiala u linearnom podrucju 
+        if point_to_goal > self.LINEAR_BORDER:                  # izracun privlacnog potentiala u linearnom podrucju 
             ap = self.LINEAR_BORDER * self.KP * point_to_goal - 0.5 * self.KP * self.LINEAR_BORDER ** 2
             return ap
         
@@ -246,16 +247,16 @@ class PotentialFieldPathPlaning(Node):
     def calculate_speed(self, drive_or_stop):
         msg = Twist()
 
-        if drive_or_stop:
-            distance_robot_to_goal = np.hypot(self.robot_x - self.goal_x, self.robot_y - self.goal_y)
-            ix = int(round((self.robot_x + abs(self.map_minimum_x)) / self.RESOLUTION))
-            iy = int(round((self.robot_y + abs(self.map_minimum_y)) / self.RESOLUTION))
-            robot_potential = self.potential_field_map[ix][iy]
+        if drive_or_stop:                                                                               # ako robot vozi
+            distance_robot_to_goal = np.hypot(self.robot_x - self.goal_x, self.robot_y - self.goal_y)   # udaljenost robota do cilja
+            ix = int(round((self.robot_x + abs(self.map_minimum_x)) / self.RESOLUTION))                 # odredivanje pozicije robota u x -osi polja
+            iy = int(round((self.robot_y + abs(self.map_minimum_y)) / self.RESOLUTION))                 # odredivanje pozicjie robota u u -soi polja
+            robot_potential = self.potential_field_map[ix][iy]                                          # oredivanje potencijala robota
 
             l = len(self.calculated_path) - 1
             is_end = False
 
-            while robot_potential - self.calculated_path[self.point_index][2] < 0.003 and (not is_end):
+            while robot_potential - self.calculated_path[self.point_index][2] < self.RC and (not is_end):   # trazenje nove tocke putanje
                 if distance_robot_to_goal <= self.RESOLUTION * 10:
                     break
                 elif self.point_index == l:
@@ -263,29 +264,31 @@ class PotentialFieldPathPlaning(Node):
                     is_end = True
                 else:
                     self.point_index += 1
-            robot_to_point_p = robot_potential - self.calculated_path[self.point_index][2]
 
-            angle_new = math.atan2(self.calculated_path[self.point_index][1] - self.robot_y,
+            robot_to_point_p = robot_potential - self.calculated_path[self.point_index][2]                  # razlika potencijala
+
+            angle_new = math.atan2(self.calculated_path[self.point_index][1] - self.robot_y,                # potrebna orijentacija
                                 self.calculated_path[self.point_index][0] - self.robot_x)
-            angele_diff = angle_new - self.robot_theta
+            angele_diff = angle_new - self.robot_theta                                                      # razlika orijentacija
+            
+            # normalizacija kutna                                           
             if angele_diff > math.pi:
                 angele_diff = -2*math.pi + angele_diff 
             elif angele_diff < -math.pi:
                 angele_diff = 2*math.pi + angele_diff
-            
-            scale_rotation_rate = 0.4 
-            scale_linear_rate = 30
-
+        
+            # definirai omjeri brzina za razlicine orijentacijske razlike
             if abs(angele_diff) > 0.7:
-                msg.angular.z = scale_rotation_rate*2 * angele_diff
-                msg.linear.x = scale_linear_rate*0.15 * robot_to_point_p
+                msg.angular.z = self.KR*2 * angele_diff
+                msg.linear.x = self.KL*0.15 * robot_to_point_p
             elif abs(angele_diff) > 1.5:
-                msg.angular.z = scale_rotation_rate*4 * angele_diff
-                msg.linear.x = scale_linear_rate*0 * robot_to_point_p
+                msg.angular.z = self.KR*4 * angele_diff
+                msg.linear.x = self.KL*0 * robot_to_point_p
             else:
-                msg.angular.z = scale_rotation_rate * angele_diff
-                msg.linear.x = scale_linear_rate * robot_to_point_p
+                msg.angular.z = self.KR * angele_diff
+                msg.linear.x = self.KL * robot_to_point_p
 
+            # limitiranje brzina
             if msg.angular.z > 0.8:
                 msg.angular.z = 0.8
             elif msg.angular.z < -0.8:
@@ -298,9 +301,9 @@ class PotentialFieldPathPlaning(Node):
                 msg.linear.x = -0.3
             else:
                 pass
-
+            
+            # zavrsetak gibanja robota
             if distance_robot_to_goal <= self.RESOLUTION * 5.5:
-                print("BRAVO###############################################################################################################")
                 msg.angular.z = 0.0
                 msg.linear.x = 0.0
                 self.drive = False
@@ -309,12 +312,6 @@ class PotentialFieldPathPlaning(Node):
 
                 self.publisher_velocity.publish(msg)
                 return 
-
-            # print("TOCKA: ", self.calculated_path[self.point_index][0], self.calculated_path[self.point_index][1])
-            # print("A_diff = {0:5f}  A_r = {1:5f}    A_p = {2:5f}".format(angele_diff, self.robot_theta, angle_new))
-            # print("P_diff = {0:5f}  P_r = {1:5f}    P_p = {2:5f}".format(robot_to_point_p, robot_potential, self.calculated_path[self.point_index][2]))
-            # print("index = ", self.point_index)
-            # print("DtG = ", distance_robot_to_goal)
         
         else:
             msg.angular.z = 0.0
@@ -326,7 +323,7 @@ class PotentialFieldPathPlaning(Node):
             self.publisher_velocity.publish(msg)
             return
         
-        self.publisher_velocity.publish(msg)
+        self.publisher_velocity.publish(msg)                # objavljivanje nove brzine
 
     def handle_marvelmind_pose(self, msg):
         if self.is_start:
@@ -337,16 +334,16 @@ class PotentialFieldPathPlaning(Node):
         else:
             pass
     
-    def handle_odom(self, msg):
-        self.robot_x = msg.pose.pose.position.x
-        self.robot_y = msg.pose.pose.position.y
-        self.robot_path.append([self.robot_x, self.robot_y])
+    def handle_odom(self, msg):                                 # nova pozicija odometrije
+        self.robot_x = msg.pose.pose.position.x                 # spremanje nove x -koordinate robota
+        self.robot_y = msg.pose.pose.position.y                 # spremanje nove y -koordinate robota
+        self.robot_path.append([self.robot_x, self.robot_y])    
 
         angles = euler_from_quaternion([msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, msg.pose.pose.orientation.w])
         self.robot_theta = angles[2]
         
         if self.drive:
-            self.calculate_speed(True)
+            self.calculate_speed(True)                                      # izracunavanje nove brzine
             robot_path_msg = Path()
             robot_path_msg.header.stamp = self.get_clock().now().to_msg()
             robot_path_msg.header.frame_id = "world"

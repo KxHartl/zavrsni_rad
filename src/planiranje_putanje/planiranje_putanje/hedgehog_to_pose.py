@@ -2,16 +2,12 @@ from marvelmind_ros2_msgs.msg import HedgePositionAngle
 from marvelmind_ros2_msgs.msg import BeaconPositionAddressed
 import rclpy
 from rclpy.node import Node
-from tf2_ros.buffer import Buffer
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
 from geometry_msgs.msg import PoseStamped
 
 from tf_transformations import quaternion_from_euler
 import math
-import numpy as np
-import time
-
 
 class FramePublisher(Node):
     def __init__(self):
@@ -49,8 +45,8 @@ class FramePublisher(Node):
         )
 
     def handle_hedgehog_pos_ang(self, msg):
-        self.count = self.count + 1
 
+        # Nuliranje kuta pri pokretanju sustava
         if not self.angle_corected:
             self.angles.append(msg.angle)
             if len(self.angles) > 20:
@@ -58,13 +54,13 @@ class FramePublisher(Node):
                 angles_med = self.angles[9]
                 self.angle_diff = -angles_med
                 self.angle_corected = True
-
         x_new = msg.x_m
         y_new = msg.y_m
 
+        # Ispravljanje sustavne pogreske
+        self.count = self.count + 1
         angle_drift = self.count * 0.00165/21
 
-        self.last_angle = math.radians(msg.angle + self.angle_diff) - angle_drift
 
         q = quaternion_from_euler(0, 0, math.radians(msg.angle + self.angle_diff) - angle_drift)
 
